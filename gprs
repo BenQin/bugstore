@@ -1,0 +1,77 @@
+日期：2017-11-6
+问题：MCU通过串口接收g510数据时出现等待时间长
+原因：串口接收的循环缓存区没有判断缓冲区慢的情况
+怎么发现的：从模块接收的数据长度超过缓冲区的长度时，头直接把尾覆盖，但是尾没有移动
+代码片段：
+    int g510_recv_data(char *tmpbuf)中
+        sprintf(strCmd,"AT$MYNETREAD=%d,%d\r", SOCKET_ID, 1500);
+    改为
+        sprintf(strCmd,"AT$MYNETREAD=%d,%d\r", SOCKET_ID, UART_PHY_SIZE);
+    __interrupt static void r_uart0_interrupt_receive(void)中
+        g_pUart0_phy_buf[uart0_phy_in] = RXD0;
+	uart0_phy_in++;
+	if(uart0_phy_in >= UART_PHY_SIZE)
+	{
+		uart0_phy_in = 0;
+	}
+    改为
+        g_pUart0_phy_buf[uart0_phy_in] = RXD0;
+	uart0_phy_in++;
+	if(uart0_phy_in >= UART_PHY_SIZE)
+	{
+		uart0_phy_in = 0;
+	}
+	if (uart0_phy_in == uart0_phy_out)
+	{
+	    ++uart0_phy_out;
+	    if (uart0_phy_out >= UART_PHY_SIZE)
+	        uart0_phy_out = 0;
+	}
+修复：1、每次接收数据都大于缓冲区的长度；2、头覆盖尾时移动尾。
+相关文件：r_cg_serial.c, g510.c
+责任者：
+解决bug时间：5分钟
+教训：数据收发的逻辑影响到数据的完整性，数据的完整性影响到后续程序的流程。每个细节必须保持严谨性。
+
+
+
+
+
+
+
+日期：2017-11-6
+问题：MCU通过串口接收电表数据异常
+原因：除去硬件的原因，软件在接收的时间太短或者说电表发送时间太长。
+怎么发现的：仿真发现绝大部分时间都不能通过程序逻辑。仿真监控的数据往往只有部分正确，但是电脑监控的数据都是正确。
+代码片段：
+UCHAR GetNetWorkParam(P_ST_GPRS_PARAM pParam)中的
+         if(Phy_AvailBytes(METER_UART) < len)
+	 {
+		L_usleep(500);
+	 }
+    改成
+         if(Phy_AvailBytes(METER_UART) < len)
+         {
+	        L_sleep(2);
+         }
+     或者
+         k = timeout / 100;
+	 while (Phy_AvailBytes(METER_UART) < len && k-- > 0)
+	 {
+	     R_WDT_Restart();
+	     L_usleep(100);
+	 }
+    另外，USHORT Uart_Phy_Recv(UCHAR uPort,UCHAR *pBuffer,USHORT len,USHORT timeout)中的timeout在缓冲区有数据时是没有作用的
+       while(uart2_phy_out == uart2_phy_in)
+	{
+		if(t_timeout <= 0) return 0;
+		L_usleep(100);
+		R_WDT_Restart();
+		if(t_timeout-- <= 0) return 0;
+	}	
+	这段代码只有缓冲区为空时才会等待。
+修复：双方协调好时间。
+相关文件：r_cg_serial.c, hostapp.c
+责任者：
+解决时间：5分钟
+教训：通信协议的缺陷可能导致通信异常。
